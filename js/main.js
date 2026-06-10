@@ -13,6 +13,14 @@
     // React to theme/reduce-motion changes made in Settings.
     window.addEventListener('calliope:settings', () => App.applySettings());
 
+    // iOS can leave the speech synthesizer paused after the app is backgrounded;
+    // nudge it back to life whenever she returns to the app.
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden && window.speechSynthesis) {
+        try { speechSynthesis.resume(); } catch (e) {}
+      }
+    });
+
     // Keep the OS auto theme live.
     if (window.matchMedia) {
       const mq = window.matchMedia('(prefers-color-scheme: dark)');

@@ -1,5 +1,5 @@
 /* Calliope service worker — makes the app work fully offline once loaded. */
-const CACHE = 'calliope-v2';
+const CACHE = 'calliope-v3';
 const ASSETS = [
   './', './index.html', './manifest.webmanifest',
   './css/styles.css',

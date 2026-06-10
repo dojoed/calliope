@@ -93,8 +93,11 @@ window.Sound = (function () {
       ctx();
       if (window.speechSynthesis) {
         try {
-          const u = new SpeechSynthesisUtterance(' ');
-          u.volume = 0;
+          // A near-silent (not zero — iOS may skip volume-0) utterance spoken
+          // inside the gesture unlocks the synthesizer for later calls.
+          speechSynthesis.resume();
+          const u = new SpeechSynthesisUtterance('a');
+          u.volume = 0.01;
           speechSynthesis.speak(u);
         } catch (e) {}
       }
@@ -105,7 +108,6 @@ window.Sound = (function () {
       const vol = Store.get('volume');
       if (vol <= 0) return;
       opts = opts || {};
-      try { speechSynthesis.cancel(); } catch (e) {}
       const u = new SpeechSynthesisUtterance(String(text));
       if (!voice) voice = chooseVoice();
       if (voice) u.voice = voice;
@@ -114,7 +116,16 @@ window.Sound = (function () {
       u.pitch = opts.pitch != null ? opts.pitch : 1.0;
       u.volume = vol;
       if (opts.onend) u.onend = opts.onend;
-      try { speechSynthesis.speak(u); } catch (e) {}
+      // Keep a reference so Chrome's GC can't reap the utterance mid-speech.
+      this._u = u;
+      const synth = speechSynthesis;
+      try { synth.cancel(); } catch (e) {}
+      // iOS/Chrome quirk: speak() fired in the same tick as cancel() is often
+      // silently dropped, and the synth can wedge in a paused state. A short
+      // defer + resume() sidesteps both.
+      setTimeout(() => {
+        try { synth.resume(); synth.speak(u); } catch (e) {}
+      }, 60);
     },
 
     // A soft two-note "well done" chime.

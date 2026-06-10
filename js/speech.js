@@ -11,7 +11,9 @@ window.Sound = (function () {
   const voiceListeners = [];
 
   // macOS/iOS ship novelty/robotic voices we never want to pick automatically.
-  const BAD = /(Albert|Bad News|Good News|Bahh|Bells|Boing|Bubbles|Cellos|Wobble|Jester|Organ|Superstar|Trinoids|Whisper|Zarvox|Deranged|Hysterical|Eddy|Flo|Grandma|Grandpa|Reed|Rocko|Sandy|Shelley|Junior|Ralph|Fred|Kathy|Novelty)/i;
+  // Siri voices are also excluded: they appear in getVoices() but are
+  // restricted by the OS and produce *silence* when used from a web page.
+  const BAD = /(Siri|Albert|Bad News|Good News|Bahh|Bells|Boing|Bubbles|Cellos|Wobble|Jester|Organ|Superstar|Trinoids|Whisper|Zarvox|Deranged|Hysterical|Eddy|Flo|Grandma|Grandpa|Reed|Rocko|Sandy|Shelley|Junior|Ralph|Fred|Kathy|Novelty)/i;
 
   function allEnglishVoices() {
     const voices = window.speechSynthesis ? speechSynthesis.getVoices() : [];
@@ -25,7 +27,6 @@ window.Sound = (function () {
     let s = 0;
     const n = v.name || '';
     if (/Enhanced|Premium|Neural|Natural/i.test(n)) s += 100;
-    if (/Siri/i.test(n)) s += 80;
     if (['Samantha', 'Ava', 'Allison', 'Joelle', 'Nicky', 'Karen', 'Moira', 'Serena'].some(x => n.includes(x))) s += 30;
     if (/Google US English/i.test(n)) s += 40;
     if (/Google UK English Female/i.test(n)) s += 25;
@@ -42,7 +43,7 @@ window.Sound = (function () {
     const savedURI = Store.get('voice');
     if (savedURI) {
       const saved = all.find(v => v.voiceURI === savedURI);
-      if (saved) return saved;
+      if (saved && !BAD.test(saved.name)) return saved;
     }
     const eng = allEnglishVoices();
     return eng[0] || all.find(v => /^en/i.test(v.lang)) || all[0];
@@ -116,16 +117,34 @@ window.Sound = (function () {
       u.pitch = opts.pitch != null ? opts.pitch : 1.0;
       u.volume = vol;
       if (opts.onend) u.onend = opts.onend;
+      // If this voice errors out (some system voices are listed but unusable
+      // from web pages), retry once with the browser's own default voice.
+      if (!opts._retry) {
+        u.onerror = (ev) => {
+          // 'interrupted'/'canceled' just mean we started saying something new.
+          if (ev && (ev.error === 'interrupted' || ev.error === 'canceled')) return;
+          const fallback = new SpeechSynthesisUtterance(String(text));
+          fallback.lang = 'en-US';
+          fallback.rate = u.rate; fallback.pitch = u.pitch; fallback.volume = u.volume;
+          this._u = fallback;
+          try { speechSynthesis.speak(fallback); } catch (e) {}
+        };
+      }
       // Keep a reference so Chrome's GC can't reap the utterance mid-speech.
       this._u = u;
       const synth = speechSynthesis;
+      const fire = () => { try { synth.resume(); synth.speak(u); } catch (e) {} };
+      const wasBusy = synth.speaking || synth.pending;
       try { synth.cancel(); } catch (e) {}
-      // iOS/Chrome quirk: speak() fired in the same tick as cancel() is often
-      // silently dropped, and the synth can wedge in a paused state. A short
-      // defer + resume() sidesteps both.
-      setTimeout(() => {
-        try { synth.resume(); synth.speak(u); } catch (e) {}
-      }, 60);
+      if (wasBusy) {
+        // iOS/Chrome quirk: speak() in the same tick as cancel() is often
+        // silently dropped — defer just past the cancellation.
+        setTimeout(fire, 60);
+      } else {
+        // Speak synchronously so Safari still sees the user gesture (its
+        // first-speech unlock requires speak() inside the tap handler).
+        fire();
+      }
     },
 
     // A soft two-note "well done" chime.

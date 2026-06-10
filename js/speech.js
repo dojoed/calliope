@@ -22,11 +22,18 @@ window.Sound = (function () {
       .sort((a, b) => score(b) - score(a));
   }
 
+  const IS_CHROME = /Chrome\//.test(navigator.userAgent) && !/Edg|OPR/.test(navigator.userAgent);
+
   // Higher score = nicer. Enhanced/premium/natural voices win; US English next.
+  // EXCEPT in Chrome on macOS: Chrome lists the system's Enhanced voices but
+  // renders them as silence — there, its own Google voices are the good ones.
   function score(v) {
     let s = 0;
     const n = v.name || '';
-    if (/Enhanced|Premium|Neural|Natural/i.test(n)) s += 100;
+    if (IS_CHROME) {
+      if (/Google/i.test(n)) s += 200;
+      if (/Enhanced|Premium/i.test(n)) s -= 50;
+    } else if (/Enhanced|Premium|Neural|Natural/i.test(n)) s += 100;
     if (['Samantha', 'Ava', 'Allison', 'Joelle', 'Nicky', 'Karen', 'Moira', 'Serena'].some(x => n.includes(x))) s += 30;
     if (/Google US English/i.test(n)) s += 40;
     if (/Google UK English Female/i.test(n)) s += 25;
@@ -86,6 +93,11 @@ window.Sound = (function () {
     osc.stop(t0 + dur + 0.05);
   }
 
+  // Telemetry for the on-page debug panel (?debug=1).
+  function emit(phase, detail) {
+    try { window.dispatchEvent(new CustomEvent('calliope:tts', { detail: Object.assign({ phase }, detail || {}) })); } catch (e) {}
+  }
+
   return {
     // Call once from a user gesture so iOS allows speech later.
     warmup() {
@@ -116,25 +128,38 @@ window.Sound = (function () {
       u.rate = opts.rate != null ? opts.rate : Store.get('speechRate');
       u.pitch = opts.pitch != null ? opts.pitch : 1.0;
       u.volume = vol;
-      if (opts.onend) u.onend = opts.onend;
-      // If this voice errors out (some system voices are listed but unusable
-      // from web pages), retry once with the browser's own default voice.
-      if (!opts._retry) {
-        u.onerror = (ev) => {
-          // 'interrupted'/'canceled' just mean we started saying something new.
-          if (ev && (ev.error === 'interrupted' || ev.error === 'canceled')) return;
-          const fallback = new SpeechSynthesisUtterance(String(text));
-          fallback.lang = 'en-US';
-          fallback.rate = u.rate; fallback.pitch = u.pitch; fallback.volume = u.volume;
-          this._u = fallback;
-          try { speechSynthesis.speak(fallback); } catch (e) {}
-        };
+      let started = false;
+      u.onstart = () => { started = true; emit('start', { text }); };
+      u.onend = () => { emit('end', { text }); if (opts.onend) opts.onend(); };
+
+      const synth = speechSynthesis;
+      const self = this;
+      // Retry with the browser's own default voice (no voice object at all) —
+      // used when a listed voice turns out to be unusable.
+      function retryDefault(why) {
+        emit('retry-default', { text, why });
+        const fallback = new SpeechSynthesisUtterance(String(text));
+        fallback.lang = 'en-US';
+        fallback.rate = u.rate; fallback.pitch = u.pitch; fallback.volume = u.volume;
+        fallback.onstart = () => { started = true; emit('start', { text, via: 'fallback' }); };
+        if (opts.onend) fallback.onend = opts.onend;
+        self._u = fallback;
+        try { synth.cancel(); } catch (e) {}
+        try { synth.resume(); synth.speak(fallback); } catch (e) {}
       }
+      u.onerror = (ev) => {
+        const code = (ev && ev.error) || '?';
+        emit('error', { text, error: code });
+        // 'interrupted'/'canceled' just mean we started saying something new.
+        if (code === 'interrupted' || code === 'canceled') return;
+        retryDefault('error:' + code);
+      };
+
       // Keep a reference so Chrome's GC can't reap the utterance mid-speech.
       this._u = u;
-      const synth = speechSynthesis;
-      const fire = () => { try { synth.resume(); synth.speak(u); } catch (e) {} };
+      const fire = () => { try { synth.resume(); synth.speak(u); } catch (e) { emit('throw', { text }); } };
       const wasBusy = synth.speaking || synth.pending;
+      emit('try', { text, voice: (u.voice && u.voice.name) || '(default)', busy: wasBusy });
       try { synth.cancel(); } catch (e) {}
       if (wasBusy) {
         // iOS/Chrome quirk: speak() in the same tick as cancel() is often
@@ -145,7 +170,17 @@ window.Sound = (function () {
         // first-speech unlock requires speak() inside the tap handler).
         fire();
       }
+      // Watchdog: Chrome can fail a bad voice with NO error event — the
+      // utterance simply never starts. If nothing started after 900ms, fall
+      // back to the default voice (once).
+      if (u.voice) {
+        setTimeout(() => {
+          if (!started && self._u === u && !synth.speaking) retryDefault('watchdog');
+        }, 900);
+      }
     },
+
+    ctxState() { return audioCtx ? audioCtx.state : 'none'; },
 
     // A soft two-note "well done" chime.
     chime() {

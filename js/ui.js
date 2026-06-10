@@ -322,6 +322,7 @@ window.App = (function () {
           if (confirm('Reset all settings to defaults?')) { Store.reset(); applySettings(); settings(); }
         },
       }, 'Reset to defaults'),
+      el('p', { class: 'set-note', style: 'text-align:center' }, 'Calliope v' + (window.CALLIOPE_VERSION || '?')),
     ]);
 
     render(wrap);
